@@ -7,16 +7,18 @@ from typing import TYPE_CHECKING
 
 from nanobot.providers.base import LLMProvider, LLMResponse
 
-__all__ = ["LLMProvider", "LLMResponse", "LiteLLMProvider", "OpenAICodexProvider", "AzureOpenAIProvider"]
+__all__ = ["LLMProvider", "LLMResponse", "LiteLLMProvider", "OpenAICodexProvider", "AzureOpenAIProvider", "ClaudeCliProvider"]
 
 _LAZY_IMPORTS = {
     "LiteLLMProvider": ".litellm_provider",
     "OpenAICodexProvider": ".openai_codex_provider",
     "AzureOpenAIProvider": ".azure_openai_provider",
+    "ClaudeCliProvider": ".claude_cli_provider",
 }
 
 if TYPE_CHECKING:
     from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+    from nanobot.providers.claude_cli_provider import ClaudeCliProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
 

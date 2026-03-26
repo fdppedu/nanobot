@@ -106,6 +106,8 @@ class WebSearchTool(Tool):
             return await self._search_jina(query, n)
         elif provider == "brave":
             return await self._search_brave(query, n)
+        elif provider == "google":
+            return await self._search_google(query, n)
         else:
             return f"Error: unknown search provider '{provider}'"
 
@@ -194,6 +196,30 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except Exception as e:
             return f"Error: {e}"
+
+    async def _search_google(self, query: str, n: int) -> str:
+        api_key = self.config.api_key or os.environ.get("GOOGLE_API_KEY", "")
+        cx = os.environ.get("GOOGLE_CX", "")
+        if not api_key or not cx:
+            logger.warning("GOOGLE_API_KEY or GOOGLE_CX not set, falling back to DuckDuckGo")
+            return await self._search_duckduckgo(query, n)
+        try:
+            async with httpx.AsyncClient(proxy=self.proxy) as client:
+                r = await client.get(
+                    "https://www.googleapis.com/customsearch/v1",
+                    params={"key": api_key, "cx": cx, "q": query, "num": min(n, 10)},
+                    timeout=10,
+                )
+                r.raise_for_status()
+                data = r.json()
+            items = [
+                {"title": i.get("title", ""), "url": i.get("link", ""), "content": i.get("snippet", "")}
+                for i in data.get("items", [])
+            ]
+            return _format_results(query, items, n)
+        except Exception as e:
+            logger.warning("Google search failed: {}", e)
+            return f"Error: Google search failed ({e})"
 
     async def _search_duckduckgo(self, query: str, n: int) -> str:
         try:

@@ -35,6 +35,11 @@ class ExecTool(Tool):
             r">\s*/dev/sd",                  # write to disk
             r"\b(shutdown|reboot|poweroff)\b",  # system power
             r":\(\)\s*\{.*\};\s*:",          # fork bomb
+            # Windows system-path protection
+            r"(?i)\b(?:rd|rmdir|del|erase|remove-item|ri)\b.*\bc:[/\\]{1,2}(?:windows|program.files|system32|users[/\\]default)\b",
+            r"(?i)\bformat\s+[a-z]:\b",      # format any drive (format C:, format D:, …)
+            r"(?i)\b(?:rd|rmdir)\b.*/s.*\bc:[/\\]{0,2}\s*$",  # rmdir /s C:\ (drive root)
+            r"(?i)remove-item\s+-recurse.*\bc:[/\\]{0,2}\s*$", # PowerShell wipe drive root
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
@@ -165,6 +170,10 @@ class ExecTool(Tool):
         if contains_internal_url(cmd):
             return "Error: Command blocked by safety guard (internal/private URL detected)"
 
+        sys_path_error = self._guard_system_paths(cmd)
+        if sys_path_error:
+            return sys_path_error
+
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
                 return "Error: Command blocked by safety guard (path traversal detected)"
@@ -180,6 +189,46 @@ class ExecTool(Tool):
                 if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
                     return "Error: Command blocked by safety guard (path outside working dir)"
 
+        return None
+
+    # Protected Windows system directories — writes/deletes to these are always blocked.
+    _WIN_SYSTEM_DIRS: tuple[str, ...] = (
+        r"c:\windows",
+        r"c:\program files",
+        r"c:\program files (x86)",
+        r"c:\system volume information",
+        r"c:\$recycle.bin",
+        r"c:\boot",
+    )
+
+    @classmethod
+    def _guard_system_paths(cls, command: str) -> str | None:
+        """Block destructive operations targeting Windows system directories.
+
+        Checks every absolute path extracted from *command*.  If a path falls
+        inside a protected directory AND the command contains a destructive verb,
+        the call is rejected.
+        """
+        lower = command.lower()
+        destructive_verbs = (
+            "del ", "erase ", "rd ", "rmdir ", "remove-item ", "ri ",
+            "format ", ">", "attrib ", "icacls ", "cacls ",
+        )
+        has_destructive = any(v in lower for v in destructive_verbs)
+        # Also block any command that writes to (>) a system path
+        has_write_redirect = ">" in command
+
+        if not has_destructive and not has_write_redirect:
+            return None
+
+        for raw in cls._extract_absolute_paths(command):
+            norm = raw.lower().replace("/", "\\").rstrip("\\")
+            for protected in cls._WIN_SYSTEM_DIRS:
+                if norm == protected or norm.startswith(protected + "\\"):
+                    return (
+                        f"Error: Command blocked by safety guard "
+                        f"(operation targets protected system path: {raw})"
+                    )
         return None
 
     @staticmethod

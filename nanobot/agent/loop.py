@@ -472,6 +472,12 @@ class AgentLoop:
         if result := await self.commands.dispatch(ctx):
             return result
 
+        # Keyword routing: delegate to claude CLI subprocess when message contains "claude"
+        if "claude" in msg.content.lower():
+            result = await self._delegate_to_claude_cli(msg)
+            if result is not None:
+                return result
+
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
@@ -524,6 +530,33 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=meta,
         )
+
+    async def _delegate_to_claude_cli(self, msg: Any) -> Any | None:
+        """Delegate message to claude CLI subprocess for full tool access."""
+        from nanobot.bus.events import OutboundMessage
+        logger.info("Delegating to claude CLI for message containing 'claude' keyword")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "--dangerously-skip-permissions", "-p", msg.content,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=21600)
+            output = stdout.decode("utf-8", errors="replace").strip()
+            if not output and stderr:
+                output = stderr.decode("utf-8", errors="replace").strip()
+            if not output:
+                output = "claude CLI returned no output."
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=output)
+        except asyncio.TimeoutError:
+            logger.error("claude CLI delegation timed out after 6h")
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="claude CLI timed out after 6 hours.")
+        except FileNotFoundError:
+            logger.warning("claude CLI not found, falling back to normal agent loop")
+            return None
+        except Exception as e:
+            logger.error("claude CLI delegation failed: {}", e)
+            return None
 
     @staticmethod
     def _image_placeholder(block: dict[str, Any]) -> dict[str, str]:

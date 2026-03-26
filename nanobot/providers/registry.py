@@ -418,6 +418,18 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         strip_model_prefix=False,
         model_overrides=(),
     ),
+    # === Claude CLI (local, no API key, uses installed `claude` binary) ======
+    ProviderSpec(
+        name="claude_cli",
+        keywords=("claude-cli", "claude_cli"),
+        env_key="",
+        display_name="Claude CLI (local)",
+        litellm_prefix="",
+        is_local=True,
+        is_direct=True,
+        default_api_base="claude",  # default binary name / path
+    ),
+
     # === Local deployment (matched by config key, NOT by api_base) =========
     # vLLM / any OpenAI-compatible local server.
     # Detected when config key is "vllm" (provider_name="vllm").

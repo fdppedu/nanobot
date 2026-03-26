@@ -385,8 +385,25 @@ def _make_provider(config: Config):
     provider_name = config.get_provider_name(model)
     p = config.get_provider(model)
 
+    # If auto-detection returned nothing but an explicit provider is configured,
+    # trust the config value directly (handles local/direct providers like claude_cli
+    # whose specs are excluded from the keyword-based auto-detection path).
+    if provider_name is None:
+        explicit = config.agents.defaults.provider
+        if explicit and explicit != "auto":
+            provider_name = explicit
+
+    # Claude CLI: local `claude` binary, no API key required
+    if provider_name == "claude_cli":
+        from nanobot.providers.claude_cli_provider import ClaudeCliProvider
+        # api_base is reused as the path/name of the claude binary (default "claude")
+        claude_path = (p.api_base or "claude") if p else "claude"
+        provider = ClaudeCliProvider(
+            claude_path=claude_path,
+            default_model=model,
+        )
     # OpenAI Codex (OAuth)
-    if provider_name == "openai_codex" or model.startswith("openai-codex/"):
+    elif provider_name == "openai_codex" or model.startswith("openai-codex/"):
         provider = OpenAICodexProvider(default_model=model)
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     elif provider_name == "custom":
@@ -420,7 +437,7 @@ def _make_provider(config: Config):
     else:
         from nanobot.providers.litellm_provider import LiteLLMProvider
         from nanobot.providers.registry import find_by_name
-        spec = find_by_name(provider_name)
+        spec = find_by_name(provider_name) if provider_name else None
         if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and (spec.is_oauth or spec.is_local)):
             console.print("[red]Error: No API key configured.[/red]")
             console.print("Set one in ~/.nanobot/config.json under providers section")

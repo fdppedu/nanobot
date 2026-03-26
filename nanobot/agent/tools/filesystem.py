@@ -8,6 +8,34 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 from nanobot.utils.helpers import build_image_content_blocks, detect_image_mime
 
+# C:\Users\User\.claude can be accessed
+_WIN_PROTECTED_DIRS: tuple[Path, ...] = tuple(
+    Path(d)
+    for d in (
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\System Volume Information",
+        r"C:\$Recycle.Bin",
+        r"C:\Boot",
+    )
+)
+
+
+def _is_protected_system_path(path: Path) -> bool:
+    """Return True if *path* is inside a Windows system directory that must not be modified."""
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False
+    for protected in _WIN_PROTECTED_DIRS:
+        try:
+            resolved.relative_to(protected.resolve())
+            return True
+        except ValueError:
+            pass
+    return False
+
 
 def _resolve_path(
     path: str,
@@ -177,6 +205,8 @@ class WriteFileTool(_FsTool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             fp = self._resolve(path)
+            if _is_protected_system_path(fp):
+                return f"Error: Writing to system path '{fp}' is blocked by safety guard"
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {fp}"
@@ -253,6 +283,8 @@ class EditFileTool(_FsTool):
     ) -> str:
         try:
             fp = self._resolve(path)
+            if _is_protected_system_path(fp):
+                return f"Error: Editing system path '{fp}' is blocked by safety guard"
             if not fp.exists():
                 return f"Error: File not found: {path}"
 
