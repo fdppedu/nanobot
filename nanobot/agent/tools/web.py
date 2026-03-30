@@ -96,6 +96,16 @@ class WebSearchTool(Tool):
         provider = self.config.provider.strip().lower() or "brave"
         n = min(max(count or self.config.max_results, 1), 10)
 
+        # When query mentions "google", run both default provider and Google in parallel
+        if "google" in query.lower() and provider != "google_browser":
+            default_task = self._run_provider(provider, query, n)
+            google_task = self._search_google_browser(query, n)
+            default_result, google_result = await asyncio.gather(default_task, google_task)
+            return f"[Google]\n{google_result}\n\n[{provider.capitalize()}]\n{default_result}"
+
+        return await self._run_provider(provider, query, n)
+
+    async def _run_provider(self, provider: str, query: str, n: int) -> str:
         if provider == "duckduckgo":
             return await self._search_duckduckgo(query, n)
         elif provider == "tavily":
@@ -106,6 +116,8 @@ class WebSearchTool(Tool):
             return await self._search_jina(query, n)
         elif provider == "brave":
             return await self._search_brave(query, n)
+        elif provider == "google_browser":
+            return await self._search_google_browser(query, n)
         else:
             return f"Error: unknown search provider '{provider}'"
 
@@ -194,6 +206,123 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except Exception as e:
             return f"Error: {e}"
+
+    async def _search_google_browser(self, query: str, n: int) -> str:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.warning("playwright not installed, falling back to DuckDuckGo")
+            return await self._search_duckduckgo(query, n)
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
+                await page.goto(
+                    f"https://www.google.com/search?q={query}&hl=zh-CN&num={min(n, 10)}",
+                    wait_until="domcontentloaded",
+                    timeout=15000,
+                )
+                # Extract search result blocks
+                results = await page.evaluate("""(n) => {
+                    const items = [];
+                    document.querySelectorAll('div.g, div[data-hveid]').forEach(el => {
+                        if (items.length >= n) return;
+                        const a = el.querySelector('a[href^="http"]');
+                        const h3 = el.querySelector('h3');
+                        const snippet = el.querySelector('[data-sncf], .VwiC3b, .yXK7lf, span[style]');
+                        if (a && h3) {
+                            items.push({
+                                title: h3.innerText.trim(),
+                                url: a.href,
+                                content: snippet ? snippet.innerText.trim() : ''
+                            });
+                        }
+                    });
+                    return items;
+                }""", n)
+                await browser.close()
+            if not results:
+                return f"No results for: {query}"
+            return _format_results(query, results, n)
+        except Exception as e:
+            logger.warning("Google browser search failed: {}", e)
+            return f"Error: Google browser search failed ({e})"
+
+    async def _search_google_browser(self, query: str, n: int) -> str:
+        """Search Google by launching real Chrome via CDP to bypass bot detection."""
+        import subprocess
+        import time
+        from urllib.parse import quote_plus
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.warning("playwright not installed, falling back to DuckDuckGo")
+            return await self._search_duckduckgo(query, n)
+
+        chrome_path = os.environ.get(
+            "CHROME_PATH",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )
+        cdp_port = int(os.environ.get("CHROME_CDP_PORT", "9222"))
+        profile_dir = os.environ.get(
+            "CHROME_AUTOMATION_PROFILE",
+            str(Path.home() / "AppData/Local/Google/Chrome/AutomationProfile"),
+        )
+
+        proc = subprocess.Popen([
+            chrome_path,
+            f"--remote-debugging-port={cdp_port}",
+            f"--user-data-dir={profile_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--window-size=1280,800",
+        ])
+        await asyncio.sleep(2)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await context.new_page()
+                url = f"https://www.google.com/search?q={quote_plus(query)}&hl=zh-CN&num={min(n, 10)}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(1.5)
+
+                title = await page.title()
+                if "unusual traffic" in title.lower() or "captcha" in title.lower():
+                    logger.warning("Google browser search: CAPTCHA detected, falling back to DuckDuckGo")
+                    await page.close()
+                    return await self._search_duckduckgo(query, n)
+
+                results = await page.evaluate("""(n) => {
+                    const items = [];
+                    document.querySelectorAll('div.g, div[data-hveid]').forEach(el => {
+                        if (items.length >= n) return;
+                        const a = el.querySelector('a[href^="http"]');
+                        const h3 = el.querySelector('h3');
+                        const snippet = el.querySelector('.VwiC3b, .yXK7lf, [data-sncf], span.aCOpRe');
+                        if (a && h3 && h3.innerText.trim()) {
+                            items.push({
+                                title: h3.innerText.trim(),
+                                url: a.href,
+                                content: snippet ? snippet.innerText.trim() : ''
+                            });
+                        }
+                    });
+                    return items;
+                }""", n)
+
+                await page.close()
+            return _format_results(query, results, n) if results else f"No results for: {query}"
+        except Exception as e:
+            logger.warning("Google browser search failed: {}", e)
+            return await self._search_duckduckgo(query, n)
+        finally:
+            proc.terminate()
 
     async def _search_duckduckgo(self, query: str, n: int) -> str:
         try:
